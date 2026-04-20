@@ -21,3 +21,5 @@ __all__ = [
     "OpenTermsCallbackHandler",
     "OpenTermsClient",
 ]
+
+__version__ = "0.3.1"
