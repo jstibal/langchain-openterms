@@ -1,6 +1,9 @@
 """OpenTermsChecker: a standalone LangChain tool that agents can call
 to check what they're allowed to do on a domain before acting.
 
+Returns the permission check result as JSON. Agents should gate execution
+on the ``allowed`` field being explicitly ``true``.
+
 Usage:
     from langchain_openterms import OpenTermsChecker
 
@@ -8,6 +11,14 @@ Usage:
 
     # Agent calls this tool with a domain and action:
     result = checker.invoke("example.com read_content")
+    import json
+    parsed = json.loads(result)
+    if parsed["check"]["allowed"] is True:
+        # explicitly allowed — proceed
+        ...
+    else:
+        # blocked: denied, not_specified, missing file, low-confidence, etc.
+        print("Cannot proceed:", parsed["check"]["reason"])
 """
 
 import json
@@ -28,16 +39,27 @@ class OpenTermsChecker(BaseTool):
         "example.com scrape_data"
 
     Returns a JSON string with the permission check result including
-    domain, action, whether it's allowed, and the reason.
+    domain, action, allowed (True/False/None), and reason.
+
+    The ``allowed`` field is True only for an explicitly allowed permission.
+    All other states (denied, not_specified, missing file, low-confidence,
+    conditional) return allowed=False or allowed=None and must be treated
+    as blocked.
+
+    Canonical permission keys:
+        read_content, scrape_data, api_access, create_account,
+        make_purchases, post_content, allow_training
     """
 
     name: str = "openterms_check"
     description: str = (
         "Check what an AI agent is permitted to do on a website. "
-        "Input: '<domain> <action>' where action is one of: "
+        "Input: '<domain> <action>' where action is one of the 7 canonical keys: "
         "read_content, scrape_data, api_access, create_account, "
-        "make_purchases, post_content, execute_code. "
-        "Returns whether the action is allowed, denied, or unspecified."
+        "make_purchases, post_content, allow_training. "
+        "Returns allowed=true only for explicitly permitted actions. "
+        "All other results (denied, not_specified, missing file, "
+        "low-confidence, conditional) must be treated as blocked."
     )
     client: OpenTermsClient = None
 
