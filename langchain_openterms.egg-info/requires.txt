@@ -1,0 +1,11 @@
+langchain-core>=0.2.0
+requests>=2.28.0
+
+[dev]
+pytest>=7.0
+pytest-asyncio>=0.21
+responses>=0.23
+openterms-py>=0.3.1
+
+[sdk]
+openterms-py>=0.3.1

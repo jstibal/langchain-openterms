@@ -1,169 +1,181 @@
 # langchain-openterms
 
-Permission-aware AI agents for LangChain. Checks a domain's [openterms.json](https://openterms.com) before your agent acts, so it knows what it's allowed to do.
+Permission-aware LangChain agents that check a domain's `openterms.json`
+before taking action.
 
-## Install
+**Fail-closed by default.** If the site has no `openterms.json`, or the
+permission is not explicitly granted, execution is blocked. You must
+opt in to permissive behavior explicitly with `fail_closed=False`.
+
+## Installation
 
 ```bash
 pip install langchain-openterms
+
+# With openterms-py SDK (recommended, requires >=0.3.1):
+pip install "langchain-openterms[sdk]"
 ```
 
-## What it does
+## Canonical Permission Keys
 
-When your LangChain agent interacts with a website, this package checks `/.well-known/openterms.json` on that domain first. If the site says scraping is denied, the agent gets a clear denial instead of executing and getting blocked or creating legal exposure.
+Only these 7 keys are recognized:
 
-## Three ways to use it
+| Key | Meaning |
+|-----|---------|
+| `read_content` | Read / display page content |
+| `scrape_data` | Automated scraping / crawling |
+| `api_access` | Access the domain's API |
+| `create_account` | Create a user account |
+| `make_purchases` | Complete a purchase |
+| `post_content` | Post or publish content |
+| `allow_training` | Use content for model training |
 
-### 1. Wrap a tool (recommended)
+## Fail-Closed Defaults
 
-`OpenTermsGuard` wraps any existing tool with a permission check. If the domain denies the action, the tool returns a denial message instead of executing.
+The following states **block execution by default**:
+
+- `null` / `None` — domain unreachable or SDK error
+- `no_openterms_json` — no `openterms.json` file found
+- `not_specified` — key absent from `openterms.json`
+- `low-confidence` — validator confidence too low
+- `conditional` — permission has unverifiable conditions
+- `denied` — explicit deny
+
+Only an explicit `allowed: true` in `openterms.json` permits execution.
+
+## Quick Start: OpenTermsGuard
+
+Wrap any LangChain tool. Execution is blocked unless permission is explicitly
+granted.
 
 ```python
-from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.tools import BraveSearch
 from langchain_openterms import OpenTermsGuard
 
-search = DuckDuckGoSearchRun()
+search = BraveSearch.from_api_key(api_key="...", search_kwargs={"count": 3})
 
-# Wraps the search tool: checks "read_content" before each query
+# Fail-closed by default — blocks if no openterms.json or not explicitly allowed
 guarded_search = OpenTermsGuard(
     tool=search,
     action="read_content",
 )
 
-# Use guarded_search in your agent instead of search.
-# If a domain denies read_content, the agent gets a message
-# explaining why instead of raw results.
 result = guarded_search.invoke("https://example.com/pricing")
+
+if "blocked" in result.lower():
+    # denied, not_specified, missing file, low-confidence — all blocked
+    print("Cannot proceed:", result)
+else:
+    print("Allowed:", result)
 ```
 
-For strict mode (block if no openterms.json exists):
+**The guard never silently proceeds on ambiguous results.** If the check
+returns anything other than an explicit allow, the tool returns a block
+message.
+
+### Permissive Opt-In (explicit, not recommended for production)
 
 ```python
-guarded_search = OpenTermsGuard(
+# Only use fail_closed=False when you have a deliberate reason
+permissive_guard = OpenTermsGuard(
     tool=search,
-    action="scrape_data",
-    strict=True,  # Deny if openterms.json is absent
+    action="read_content",
+    fail_closed=False,  # pass through when no openterms.json found
 )
 ```
 
-### 2. Give the agent a checker tool
+With `fail_closed=False`, only an explicit `denied` blocks. Missing files
+and unspecified permissions pass through.
 
-`OpenTermsChecker` is a standalone tool the agent can call to check permissions before deciding what to do.
+### Denial Callback
 
 ```python
+denied_domains = []
+
+guard = OpenTermsGuard(
+    tool=search,
+    action="scrape_data",
+    on_denied=lambda domain, action, result: denied_domains.append(domain),
+)
+```
+
+## Agent Tool: OpenTermsChecker
+
+Agents can call this tool directly to check permissions before deciding
+whether to proceed.
+
+```python
+import json
 from langchain_openterms import OpenTermsChecker
-from langchain.agents import AgentExecutor, create_openai_functions_agent
 
 checker = OpenTermsChecker()
 
-# Add checker to your agent's tool list
-tools = [checker, your_other_tools...]
+# Agent calls: "<domain> <action>"
+result_json = checker.invoke("example.com scrape_data")
+parsed = json.loads(result_json)
 
-# The agent can now call:
-#   openterms_check("github.com scrape_data")
-# and get back a JSON result telling it whether scraping is allowed.
+# Gate strictly on allowed=True
+if parsed["check"]["allowed"] is True:
+    # Only here is execution safe
+    pass
+else:
+    # blocked: denied, not_specified, missing file, low-confidence, conditional
+    print("Blocked:", parsed["check"]["reason"])
 ```
 
-### 3. Passive logging with a callback
+## Passive Observer: OpenTermsCallbackHandler
 
-`OpenTermsCallbackHandler` observes tool invocations and logs permission checks without blocking anything. Useful for auditing.
+Logs permission checks without blocking. Use this for monitoring only.
+**Does not enforce permissions** — use `OpenTermsGuard` for that.
 
 ```python
 from langchain_openterms import OpenTermsCallbackHandler
 
 handler = OpenTermsCallbackHandler(
     default_action="read_content",
-    on_check=lambda r: print(f"{r['domain']}: {r['allowed']}"),
+    on_check=lambda r: print(f"{r['domain']}: allowed={r['allowed']}"),
 )
 
-result = agent.invoke(
-    {"input": "Research pricing pages"},
-    config={"callbacks": [handler]},
-)
+agent.invoke({"input": "..."}, config={"callbacks": [handler]})
 
-# After execution, inspect all checks:
+# Review after the run — these are domains where action was NOT explicitly allowed
 for check in handler.checks:
-    print(check["domain"], check["allowed"], check.get("receipt"))
+    if check["allowed"] is not True:
+        print(f"Would be blocked: {check['domain']} — {check['reason']}")
 ```
 
-## With an existing agent
+## bool() Truthiness
 
-```python
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_functions_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_openterms import OpenTermsGuard, OpenTermsChecker
+Check results use strict truthiness: `bool(result)` is `True` only for
+explicitly allowed results. Do not rely on truthiness for dict results —
+always check `result["allowed"] is True` explicitly.
 
-llm = ChatOpenAI(model="gpt-4o")
+## Using with openterms-py SDK
 
-# Wrap your web tools
-search = OpenTermsGuard(tool=DuckDuckGoSearchRun(), action="read_content")
-checker = OpenTermsChecker()
+Install with SDK support for the most accurate results:
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", (
-        "You are a research assistant. Before interacting with any website, "
-        "use the openterms_check tool to verify what you're allowed to do. "
-        "Respect all permission denials."
-    )),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
-
-agent = create_openai_functions_agent(llm, [search, checker], prompt)
-executor = AgentExecutor(agent=agent, tools=[search, checker])
-
-result = executor.invoke({"input": "Find pricing info for Stripe's API"})
+```bash
+pip install "langchain-openterms[sdk]"
+# Requires openterms-py>=0.3.1
 ```
 
-## How it works
+The SDK applies fail-closed semantics at the check level. Empty caches,
+unreachable domains, and missing files all return non-allow decisions —
+never a permissive default.
 
-1. Agent invokes a tool with a URL or domain reference
-2. The integration extracts the domain from the input
-3. Fetches `https://{domain}/.well-known/openterms.json` (cached for 1 hour)
-4. Checks the requested permission (e.g., `read_content`, `scrape_data`)
-5. If denied: returns a message explaining the denial
-6. If allowed or unspecified: tool executes normally
-7. Generates an ORS receipt (local, no server call) for audit logging
+## openterms-py Dependency
 
-## ORS Receipts
+- **With SDK** (`[sdk]` extra or `openterms-py>=0.3.1` installed): Uses the SDK
+  for all permission checks. Requires openterms-py>=0.3.1 for correct
+  fail-closed behavior.
+- **Without SDK**: Falls back to a built-in HTTP client with equivalent
+  fail-closed semantics. Missing files and unspecified keys return
+  `allowed=None`, which blocks under `fail_closed=True` (the default).
 
-Every permission check can generate a receipt: a lightweight record of what was checked, the result, and a hash of the openterms.json content at the time. These are local objects your application can log however you choose.
+## Version History
 
-```python
-from langchain_openterms import OpenTermsClient
-
-client = OpenTermsClient()
-result = client.check("example.com", "scrape_data")
-receipt = client.receipt("example.com", "scrape_data", result)
-# receipt = {
-#     "domain": "example.com",
-#     "action": "scrape_data",
-#     "allowed": False,
-#     "checked_at": "2026-04-11T...",
-#     "openterms_hash": "a1b2c3..."
-# }
-```
-
-## Configuration
-
-```python
-from langchain_openterms import OpenTermsClient
-
-client = OpenTermsClient(
-    cache_ttl=1800,  # Cache openterms.json for 30 minutes (default: 3600)
-    timeout=10,      # HTTP timeout in seconds (default: 5)
-)
-
-# Pass to any integration component
-guard = OpenTermsGuard(tool=my_tool, action="read_content", client=client)
-checker = OpenTermsChecker(client=client)
-```
-
-## Links
-
-- [OpenTerms Protocol](https://openterms.com)
-- [Specification](https://openterms.com/docs)
-- [JSON Schema](https://openterms.com/schema)
-- [openterms-py SDK](https://github.com/jstibal/openterms-py)
+- **0.4.0** — Fail-closed by default (`fail_closed=True`). Blocks null,
+  not_specified, no_openterms_json, low-confidence, conditional, denied.
+  `fail_closed=False` opt-in for permissive behavior. Canonical keys only.
+  openterms-py>=0.3.1 required for SDK mode.
+- **0.3.1** — Initial public release.
