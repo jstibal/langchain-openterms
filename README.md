@@ -7,6 +7,14 @@ before taking action.
 permission is not explicitly granted, execution is blocked. You must
 opt in to permissive behavior explicitly with `fail_closed=False`.
 
+## Related OpenTerms Packages
+
+[openterms-py](https://pypi.org/project/openterms-py/) — Core Python SDK for checking machine-readable permission rules.
+[langchain-openterms](https://pypi.org/project/langchain-openterms/) — OpenTerms tools for LangChain agents.
+[crewai-openterms](https://pypi.org/project/crewai-openterms/) — OpenTerms tools for CrewAI agents.
+[openterms-examples](https://github.com/jstibal/openterms-examples) — Runnable examples for Python, LangChain, and CrewAI.
+[OpenTerms SDK docs](https://openterms.com/sdk) — SDK reference and integration guide.
+
 ## Installation
 
 ```bash
